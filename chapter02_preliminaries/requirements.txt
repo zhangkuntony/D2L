@@ -1,0 +1,6 @@
+ipykernel
+matplotlib
+notebook
+pandas
+torch
+torchvision
