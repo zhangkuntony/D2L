@@ -4,6 +4,7 @@ D2L (Dive into Deep Learning) 常用工具函数集合
 """
 import time
 import random
+import matplotlib.pyplot as plt
 import numpy as np
 import os
 import torch
@@ -11,7 +12,6 @@ import torchvision
 
 from torch.utils import data
 from torchvision import transforms
-from matplotlib import pyplot as plt
 from matplotlib_inline import backend_inline
 
 # ==================== 数据处理 ====================
@@ -63,10 +63,66 @@ def sgd(params, lr, batch_size):
 
 
 # ==================== 可视化 ====================
+from IPython import display
+
+class Animator:
+    """在动画中绘制数据"""
+    def __init__(self, xlabel=None, ylabel=None, legend=None, xlim=None,
+                 ylim=None, xscale='linear', yscale='linear',
+                 fmts=('-', 'm--', 'g-.', 'r:'), nrows=1, ncols=1,
+                 figsize=(3.5, 2.5)):
+        # 增量地绘制多条线
+        if legend is None:
+            legend = []
+        use_svg_display()
+        self.fig, self.axes = plt.subplots(nrows, ncols, figsize=figsize)
+        if nrows * ncols == 1:
+            self.axes = [self.axes, ]
+        # 使用lambda函数捕捉参数
+        self.config_axes = lambda: set_axes(
+            self.axes[0], xlabel, ylabel, xlim, ylim, xscale, yscale, legend
+        )
+        self.X, self.Y, self.fmts = None, None, fmts
+
+    def add(self, x, y):
+        # 向图表中添加多个数据点
+        if not hasattr(y, "__len__"):
+            y = [y]
+        n = len(y)
+        if not hasattr(x, "__len__"):
+            x = [x] * n
+        if not self.X:
+            self.X = [[] for _ in range(n)]
+        if not self.Y:
+            self.Y = [[] for _ in range(n)]
+        for i, (a, b) in enumerate(zip(x, y)):
+            if a is not None and b is not None:
+                self.X[i].append(a)
+                self.Y[i].append(b)
+        self.axes[0].cla()
+        for x, y, fmt in zip(self.X, self.Y, self.fmts):
+            self.axes[0].plot(x, y, fmt)
+        self.config_axes()
+        display.display(self.fig)
+        display.clear_output(wait=False)
+
 
 def use_svg_display():
     """使用svg格式在Jupyter中显示绘图"""
     backend_inline.set_matplotlib_formats('svg')
+
+
+def set_axes(axes, xlabel, ylabel, xlim, ylim, xscale, yscale, legend):
+    """设置matplotlib的轴"""
+    axes.set_xlabel(xlabel)
+    axes.set_ylabel(ylabel)
+    axes.set_xscale(xscale)
+    axes.set_yscale(yscale)
+    axes.set_xlim(xlim)
+    axes.set_ylim(ylim)
+    if legend:
+        axes.legend(legend)
+    axes.grid()
 
 
 def set_figsize(figsize=(3.5, 2.5)):
@@ -201,6 +257,84 @@ def accuracy(y_hat, y):
     # y_hat = y_hat.type(y.dtype)
     cmp = y_hat.type(y.dtype) == y
     # 运算之后的cmp的数据类型为布尔类型 cmp = [True, False, False, ..., True]
-    print(cmp)
     # 先将cmp的布尔类型转换成int类型: 0或1，然后再求和，求和之后再转换成float类型，方便后续计算精确度
     return float(cmp.type(y.dtype).sum())
+
+# =========== 第三章模型相关 =================
+class Accumulator:
+    """在n个变量上累加"""
+    def __init__(self, n):
+        self.data = [0.] * n
+
+    def add(self, *args):
+        self.data = [a + float(b) for a, b in zip(self.data, args)]
+
+    def reset(self):
+        self.data = [0.0] * len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx]
+
+def evaluate_accuracy(net, data_iter):
+    """计算在指定数据集上模型的精度"""
+    if isinstance(net, torch.nn.Module):
+        net.eval()      # 将模型设置为评估模式
+    metric = Accumulator(2)     # 正确预测数、预测总数
+    with torch.no_grad():
+        for X, y in data_iter:
+            metric.add(accuracy(net(X), y), y.numel())
+    return metric[0] / metric[1]
+
+
+def train_epoch_ch3(net, train_iter, loss, updater):
+    """训练模型一轮"""
+    # 将模型设置为训练模式
+    if isinstance(net, torch.nn.Module):
+        net.train()
+
+    # 训练损失总和、训练准确度总和、样本数
+    metric = Accumulator(3)
+    for X, y in train_iter:
+        # 计算梯度并更新参数
+        y_hat = net(X)
+        l = loss(y_hat, y)
+        if isinstance(updater, torch.optim.Optimizer):
+            # 使用PyTorch内置的优化器和损失函数
+            updater.zero_grad()
+            l.mean().backward()
+            updater.step()
+        else:
+            # 使用定制的优化器和损失函数
+            l.sum().backward()
+            updater(X.shape[0])
+        metric.add(float(l.sum().detach()), accuracy(y_hat, y), y.numel())
+    # 返回训练损失和训练精度
+    return metric[0] / metric[2], metric[1] / metric[2]
+
+def train_ch3(net, train_iter, test_iter, loss, num_epochs, updater):
+    """训练模型"""
+    train_metrics = []
+    test_acc = 0
+    animator = Animator(xlabel='epoch', xlim=[1, num_epochs], ylim=[0.3, 0.9],
+                        legend=['train loss', 'train acc', 'test acc'])
+    for epoch in range(num_epochs):
+        train_metrics = train_epoch_ch3(net, train_iter, loss, updater)
+        test_acc = evaluate_accuracy(net, test_iter)
+        animator.add(epoch + 1, train_metrics + (test_acc, ))
+    train_loss, train_acc = train_metrics
+    assert train_loss < 0.5, train_loss
+    assert 1 >= train_acc > 0.7, train_acc
+    assert 1 >= test_acc > 0.7, test_acc
+
+
+def predict_ch3(net, test_iter, n=10):
+    """预测标签"""
+    for X, y in test_iter:
+        break
+
+    trues = get_fashion_mnist_labels(y)
+    preds = get_fashion_mnist_labels(net(X).argmax(1))
+    titles = [true + '\n' + pred for true, pred in zip(trues, preds)]
+    show_images(
+        X[0:n].reshape((n, 28, 28)), 1, n, titles=titles[0:n]
+    )
