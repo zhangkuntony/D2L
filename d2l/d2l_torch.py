@@ -62,6 +62,17 @@ def sgd(params, lr, batch_size):
             param.grad.zero_()
 
 
+def evaluate_loss(net, data_iter, loss):
+    """评估给定数据集上模型的损失"""
+    metric = Accumulator(2)     # 损失的总和，样本数量
+    for X, y in data_iter:
+        out = net(X)
+        y = y.reshape(out.shape)
+        l = loss(out, y)
+        metric.add(l.sum(), l.numel())
+    return metric[0] / metric[1]
+
+
 # ==================== 可视化 ====================
 def plot(X, Y=None, xlabel=None, ylabel=None, legend=None, xlim=None,
          ylim=None, xscale='linear', yscale='linear',
