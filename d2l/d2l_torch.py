@@ -294,13 +294,17 @@ def load_data_fashion_mnist(batch_size, resize=None):
 def accuracy(y_hat, y):
     """计算预测正确的数量"""
     if len(y_hat.shape) > 1 and y_hat.shape[1] > 1:
-        # 如果y_hat是二维的概率分布，
-        # 例如y_hat = [[0.1, 0.3, 0.6],
-        #               [0.3, 0.2, 0.5]]
-        # 取每一行最大值的索引，y_hat.argmax(1) = [2, 2]
+        '''
+        如果y_hat是二维的概率分布，
+        例如y_hat = [[0.1, 0.3, 0.6],
+                      [0.3, 0.2, 0.5]]
+        取每一行最大值的索引，y_hat.argmax(1) = [2, 2]
         y_hat = y_hat.argmax(1)
-    # 先将y_hat的值转换类型，与y的数据类型一致
-    # y_hat = y_hat.type(y.dtype)
+        '''
+    '''
+    先将y_hat的值转换类型，与y的数据类型一致
+    y_hat = y_hat.type(y.dtype)
+    '''
     cmp = y_hat.type(y.dtype) == y
     # 运算之后的cmp的数据类型为布尔类型 cmp = [True, False, False, ..., True]
     # 先将cmp的布尔类型转换成int类型: 0或1，然后再求和，求和之后再转换成float类型，方便后续计算精确度
@@ -387,8 +391,11 @@ def predict_ch3(net, test_iter, n=10):
 
 # =========== 数据文件下载相关 =================
 import requests
+import hashlib
+import tarfile
+import zipfile
 
-DATA_HUB = dict()
+DATA_HUB = {}
 DATA_URL = 'http://d2l-data.s3-accelerate.amazonaws.com/'
 
 def download(name, cache_dir=os.path.join('..', 'data')):
