@@ -12,4 +12,4 @@ __version__ = '1.0.0'
 from . import d2l_torch
 
 # 导出模块列表
-__all__ = ['d2l_torch.py']
+__all__ = ['d2l_torch']
