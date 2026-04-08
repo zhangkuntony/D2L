@@ -439,3 +439,14 @@ def download_all():
     """下载DATA_HUB中的所有文件"""
     for name in DATA_HUB:
         download(name)
+
+
+# =========== 卷积神经网络相关 =================
+def corr2d(X, K):
+    """二维互相关运算"""
+    h, w = K.shape
+    Y = torch.zeros((X.shape[0] - h + 1, X.shape[1] - w + 1))
+    for i in range(Y.shape[0]):
+        for j in range(Y.shape[1]):
+            Y[i, j] = (X[i: i + h, j: j + w] * K).sum()
+    return Y
