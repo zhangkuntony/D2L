@@ -299,8 +299,8 @@ def accuracy(y_hat, y):
         例如y_hat = [[0.1, 0.3, 0.6],
                       [0.3, 0.2, 0.5]]
         取每一行最大值的索引，y_hat.argmax(1) = [2, 2]
-        y_hat = y_hat.argmax(1)
         '''
+        y_hat = y_hat.argmax(1)
     '''
     先将y_hat的值转换类型，与y的数据类型一致
     y_hat = y_hat.type(y.dtype)
@@ -439,6 +439,13 @@ def download_all():
     """下载DATA_HUB中的所有文件"""
     for name in DATA_HUB:
         download(name)
+
+
+def try_gpu(i=0):
+    """如果存在, 则返回gpu(i), 否则返回cpu()"""
+    if torch.cuda.device_count() >= i + 1:
+        return torch.device(f'cuda:{i}')
+    return torch.device('cpu')
 
 
 # =========== 卷积神经网络相关 =================
