@@ -69,7 +69,7 @@ def evaluate_loss(net, data_iter, loss):
         out = net(X)
         y = y.reshape(out.shape)
         l = loss(out, y)
-        metric.add(l.sum(), l.numel())
+        metric.add(l.detach().sum(), l.numel())
     return metric[0] / metric[1]
 
 
