@@ -594,7 +594,7 @@ def count_corpus(tokens):
 def load_corpus_time_machine(max_tokens=-1):
     """返回时光机器数据集的词元索引列表和词表"""
     lines = read_time_machine()
-    tokens = tokenize(lines)
+    tokens = tokenize(lines, 'char')
     vocab = Vocab(tokens)
     # 因为时光机器数据集中的每个文本行不一定是一个句子或一个段落，所以将所有文本行展平到一个列表中
     corpus = [vocab[token] for line in tokens for token in line]
@@ -606,12 +606,10 @@ def seq_data_iter_random(corpus, batch_size, num_steps):
     """使用随机抽样生成一个小批量子序列"""
     # 从随机偏移量开始对序列进行分区，随机范围包括num_steps-1
     corpus = corpus[random.randint(0, num_steps - 1):]
-    print(corpus)
     # 减去1，是因为我们需要考虑标签
     num_subseqs = (len(corpus) - 1) // num_steps
     # 长度为num_steps的子序列的起始索引
     initial_indices = list(range(0, num_subseqs * num_steps, num_steps))
-    print(initial_indices)
     # 在随机抽样的迭代过程中，来自两个相邻的、随机的、小批量中的子序列不一定在原始序列上相邻
     random.shuffle(initial_indices)
 
@@ -631,7 +629,6 @@ def seq_data_iter_sequential(corpus, batch_size, num_steps):
     """使用顺序分区生成一个小批量子序列"""
     # 从随机偏移量开始划分序列
     offset = random.randint(0, num_steps)
-    print(offset)
     num_tokens = ((len(corpus) - offset - 1) // batch_size) * batch_size
     Xs = torch.tensor(corpus[offset: offset + num_tokens])
     Ys = torch.tensor(corpus[offset + 1: offset + 1 + num_tokens])
