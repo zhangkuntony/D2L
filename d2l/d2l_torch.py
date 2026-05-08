@@ -794,6 +794,8 @@ class RNNModel(nn.Module):
 
 # =========== 机器翻译与数据集相关 =================
 def read_data_nmt():
+    DATA_HUB['fra-eng'] = (DATA_URL + 'fra-eng.zip', '94646ad1522d915e7b0f9296181140edcf86a4f5')
+
     """载入“英语－法语”数据集"""
     data_dir = download_extract('fra-eng')
     with open(os.path.join(data_dir, 'fra.txt'), 'r',
