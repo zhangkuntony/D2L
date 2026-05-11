@@ -901,6 +901,142 @@ class EncoderDecoder(nn.Module):
         dec_state = self.decoder.init_state(enc_outputs, *args)
         return self.decoder(dec_X, dec_state)
 
+
+class Seq2SeqEncoder(Encoder):
+    """用于序列到序列学习的循环神经网络编码器"""
+    def __init__(self, vocab_size, embed_size, num_hiddens, num_layers, dropout=0, **kwargs):
+        super(Seq2SeqEncoder, self).__init__(**kwargs)
+        # 嵌入层
+        self.embedding = nn.Embedding(vocab_size, embed_size)
+        self.rnn = nn.GRU(embed_size, num_hiddens, num_layers, dropout=dropout)
+
+    def forward(self, X, *args):
+        # 输出'X'的形状: (batch_size, num_steps, embed_size)
+        X = self.embedding(X)
+        # 在循环神经网络模型中，第一个轴对应于时间步
+        X = X.permute(1, 0, 2)
+        # 如果未提及状态，则默认为0
+        output, state = self.rnn(X)
+        # output的形状: (num_steps, batch_size, num_hiddens), state的形状: (num_layers, batch_size, num_hiddens)
+        return output, state
+
+
+class Seq2SeqDecoder(Decoder):
+    """用于序列到序列学习的循环神经网络解码器"""
+    def __init__(self, vocab_size, embed_size, num_hiddens, num_layers, dropout=0, **kwargs):
+        super(Seq2SeqDecoder, self).__init__(**kwargs)
+        self.embedding = nn.Embedding(vocab_size, embed_size)
+        self.rnn = nn.GRU(embed_size + num_hiddens, num_hiddens, num_layers, dropout=dropout)
+        self.dense = nn.Linear(num_hiddens, vocab_size)
+
+    def init_state(self, enc_outputs, *args):
+        return enc_outputs[1]
+
+    def forward(self, X, state):
+        # 输出'X'的形状: (batch_size, num_steps, embed_size)
+        X = self.embedding(X).permute(1, 0, 2)
+        # 广播context，使其具有与X相同的num_steps
+        context = state[-1].repeat(X.shape[0], 1, 1)
+        X_and_context = torch.cat((X, context), 2)
+        output, state = self.rnn(X_and_context, state)
+        output = self.dense(output).permute(1, 0, 2)
+        # output的形状: (batch_size, num_steps, vocab_size), state的形状: (num_layer, batch_size, num_hiddens)
+        return output, state
+
+
+class MaskedSoftmaxCELoss(nn.CrossEntropyLoss):
+    """带遮蔽的softmax交叉熵损失函数"""
+    # pred的形状: (batch_size, num_steps, voca_size), label的形状: (batch_size, num_steps), valid_len的形状: (batch_size, )
+    def forward(self, pred, label, valid_len):
+        weights = torch.ones_like(label)
+        weights = sequence_mask(weights, valid_len)
+        self.reduction = 'none'
+        unweighted_loss = super(MaskedSoftmaxCELoss, self).forward(pred.permute(0, 2, 1), label)
+        weighted_loss = (unweighted_loss * weights).mean(dim=1)
+        return weighted_loss
+
+
+def train_seq2seq(net, data_iter, lr, num_epochs, tgt_vocab, device):
+    """训练序列到序列模型"""
+    def xavier_init_weights(m):
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_uniform_(m.weight)
+        if isinstance(m, nn.GRU):
+            for param in m._flat_weights_names:
+                if "weight" in param:
+                    nn.init.xavier_uniform_(m._parameters[param])
+
+    net.apply(xavier_init_weights)
+    net.to(device)
+    optimizer = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=0)
+    loss = MaskedSoftmaxCELoss()
+    net.train()
+    animator = Animator(xlabel='epoch', ylabel='loss', xlim=[10, num_epochs])
+    for epoch in range(num_epochs):
+        timer = Timer()
+        metric = Accumulator(2)     # 训练损失总和，词元数量
+        for batch in data_iter:
+            optimizer.zero_grad()
+            X, X_valid_len, Y, Y_valid_len = [x.to(device) for x in batch]
+            bos = torch.tensor([tgt_vocab['<bos>']] * Y.shape[0], device=device).reshape(-1, 1)
+            dec_input = torch.cat([bos, Y[:, :-1]], 1)      # 强制教学
+            Y_hat, _ = net(X, dec_input, X_valid_len)
+            l = loss(Y_hat, Y, Y_valid_len)
+            l.sum().backward()      # 损失函数的标量进行“反向传播”
+            grad_clipping(net, 1)
+            num_tokens = Y_valid_len.sum()
+            optimizer.step()
+            with torch.no_grad():
+                metric.add(l.sum(), num_tokens)
+        if (epoch + 1) % 10 == 0:
+            animator.add(epoch + 1, (metric[0] / metric[1],))
+    print(f'loss {metric[0] / metric[1]:.3f}, {metric[1] / timer.stop():.1f} '
+          f'tokens/sec on {str(device)}')
+
+def predict_seq2seq(net, src_sentence, src_vocab, tgt_vocab, num_steps, device, save_attention_weights=False):
+    """序列到序列模型的预测"""
+    # 在预测时将net设置为评估模式
+    net.eval()
+    src_tokens = src_vocab[src_sentence.lower().split(' ')] + [src_vocab['<eos>']]
+    enc_valid_len = torch.tensor([len(src_tokens)], device=device)
+    src_tokens = truncate_pad(src_tokens, num_steps, src_vocab['<pad>'])
+    # 添加批量轴
+    enc_X = torch.unsqueeze(torch.tensor(src_tokens, dtype=torch.long, device=device), dim=0)
+    enc_output = net.encoder(enc_X, enc_valid_len)
+    dec_state = net.decoder.init_state(enc_output, enc_valid_len)
+    # 添加批量轴
+    dec_X = torch.unsqueeze(torch.tensor([tgt_vocab['<bos>']], dtype=torch.long, device=device), dim=0)
+    output_seq, attention_weight_seq = [], []
+    for _ in range(num_steps):
+        Y, dec_state = net.decoder(dec_X, dec_state)
+        # 我们使用具有预测最高可能性的词元，作为解码器在下一时间步的输入
+        dec_X = Y.argmax(dim=2)
+        pred = dec_X.squeeze(dim=0).type(torch.int32).item()
+        # 保存注意力权重
+        if save_attention_weights:
+            attention_weight_seq.append(net.decoder.attention_weights)
+        # 一旦序列结束词元被预测，输出序列的生成就完成了
+        if pred == tgt_vocab['<eos>']:
+            break
+        output_seq.append(pred)
+    return ' '.join(tgt_vocab.to_tokens(output_seq)), attention_weight_seq
+
+def bleu(pred_seq, label_seq, k):
+    """计算BLEU"""
+    pred_tokens, label_tokens = pred_seq.split(' '), label_seq.split(' ')
+    len_pred, len_label = len(pred_tokens), len(label_tokens)
+    score = math.exp(min(0, 1 - len_label / len_pred))
+    for n in range(1, k + 1):
+        num_matches, label_subs = 0, collections.defaultdict(int)
+        for i in range(len_label - n + 1):
+            label_subs[' '.join(label_tokens[i: i + n])] += 1
+        for i in range(len_pred - n + 1):
+            if label_subs[' '.join(pred_tokens[i: i + n])] > 0:
+                num_matches +=1
+                label_subs[' '.join(pred_tokens[i: i + n])] -= 1
+        score *= math.pow(num_matches / (len_pred - n + 1), math.pow(0.5, n))
+    return score
+
 def sequence_mask(X, valid_len, value=0):
     """在序列中屏蔽不相关的项"""
     maxlen = X.size(1)
@@ -924,3 +1060,42 @@ def show_heatmaps(matrices, xlabel, ylabel, titles=None, figsize=(2.5, 2.), cmap
             if titles:
                 ax.set_title(titles[j])
     fig.colorbar(pcm, ax=axes, shrink=0.6)
+
+def masked_softmax(X, valid_lens):
+    """通过在最后一个轴上掩蔽元素来执行softmax操作"""
+    # X: 3D张量, valid_lens: 1D或2D张量
+    if valid_lens is None:
+        return nn.functional.softmax(X, dim=-1)
+    else:
+        shape = X.shape
+        if valid_lens.dim() == 1:
+            valid_lens = torch.repeat_interleave(valid_lens, shape[1])
+        else:
+            valid_lens = valid_lens.reshape(-1)
+        # 最后一轴上被掩蔽的元素使用一个非常大的负值替换，从而其softmax输出为0
+        X = sequence_mask(X.reshape(-1, shape[-1]), valid_lens, value=-1e6)
+        return nn.functional.softmax(X.reshape(shape), dim=-1)
+
+class AdditiveAttention(nn.Module):
+    """加性注意力"""
+    def __init__(self, key_size, query_size, num_hiddens, dropout, **kwargs):
+        super(AdditiveAttention, self).__init__(**kwargs)
+        self.W_k = nn.Linear(key_size, num_hiddens, bias=False)
+        self.W_q = nn.Linear(query_size, num_hiddens, bias=False)
+        self.w_v = nn.Linear(num_hiddens, 1, bias=False)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, queries, keys, values, valid_lens):
+        queries, keys = self.W_q(queries), self.W_k(keys)
+        # 在维度扩展后，
+        # queries的形状: (batch_size, 查询的个数, 1, num_hiddens)
+        # key的形状: (batch_size, 1, “键-值”对的个数, num_hiddens)
+        # 使用广播方式进行求和
+        features = queries.unsqueeze(2) + keys.unsqueeze(1)
+        features = torch.tanh(features)
+        # self.w_v仅有一个输出，因此从形状中移除最后那个维度
+        # score的形状: (batch_size, 查询的个数, “键-值”对的个数)
+        scores = self.w_v(features).squeeze(-1)
+        self.attention_weights = masked_softmax(scores, valid_lens)
+        # values的形状: (batch_size, ”键-值“对的个数，值的维度)
+        return torch.bmm(self.dropout(self.attention_weights), values)
