@@ -1099,3 +1099,21 @@ class AdditiveAttention(nn.Module):
         self.attention_weights = masked_softmax(scores, valid_lens)
         # values的形状: (batch_size, ”键-值“对的个数，值的维度)
         return torch.bmm(self.dropout(self.attention_weights), values)
+
+
+class DotProductAttention(nn.Module):
+    """缩放点积注意力"""
+    def __init__(self, dropout, **kwargs):
+        super(DotProductAttention, self).__init__(**kwargs)
+        self.dropout = nn.Dropout(dropout)
+
+    # queries的形状：(batch_size，查询的个数，d)
+    # keys的形状：(batch_size，“键－值”对的个数，d)
+    # values的形状：(batch_size，“键－值”对的个数，值的维度)
+    # valid_lens的形状:(batch_size，)或者(batch_size，查询的个数)
+    def forward(self, queries, keys, values, valid_lens=None):
+        d = queries.shape[-1]
+        # 设置transpose_b=True为了交换keys的最后两个维度
+        scores = torch.bmm(queries, keys.transpose(1, 2)) / math.sqrt(d)
+        self.attention_weights = masked_softmax(scores, valid_lens)
+        return torch.bmm(self.dropout(self.attention_weights), values)
